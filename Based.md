@@ -1,17 +1,25 @@
-[Link](https://crackmes.one/crackme/64fdf93bd931496abf90994b)
+# Based Challenge
+
+[Source](https://crackmes.one/crackme/64fdf93bd931496abf90994b)
 
 This binary, when run, prompts the user for a password and checks if it is valid or not. Our objective is to try and guess the secret password without modifying the binary or finding an input that bypasses the validation.
+
 ## ltrace
+
 In challenges like this i like to run the binary with `ltrace` to see a bit of what is going on in the background. It is a cool tool, if the password is generated dynamically and somewhere makes a `strcmp` we will be able to see it.
 Sadly it is not the case.
-![[Pasted image 20231023105805.png]]
+
+![Screenshot ltrace-ing the program](/assets/Pasted%20image%2020231023105805.png)
 
 ## Reverse Engineering the program
+
 I will be using `radare2` to disassemble and analyse the program.
 
 ### Main function
+
 It is pretty clear it has been programmed in c++, we can find hints to `cin` and `cout` operators:
-![[Pasted image 20231023110151.png]]
+
+![Screenshot c plus plus indicators main function](/assets/Pasted%20image%2020231023110151.png)
 
 Also the inputs expects it to be an unsigned long as we can see from the `cin` call.
 
@@ -23,7 +31,8 @@ Flow:
 5. cmp2 'Welcome' if aux == 1 else 'Invalid password'
 
 Looking at the flow we see some magic happens inside of the `luna` function and then there is some comparison that can overwrite the return of the `luna` function and make it so it jumps to the invalid password. Let's analyse it:
-![[Pasted image 20231023111443.png]]
+
+![Screenshot after luna function](/assets/Pasted%20image%2020231023111443.png)
 
 After the `luna` function we are saving the value (one byte, probably true or false) into the local variable aux. Then we load the previously entered input into the `rax` register and we use that to compare. The two comparisons are `jbe` (jump below or equal, aka <=), the first jumps into the reassignment and the other to the second comparison. So this to code would be something like this:
 ```c
@@ -44,14 +53,18 @@ So the first condition is for our input to be smaller than 10.000.001 and bigger
 ### Luna function
 
 Looking at the flow we can see some type of loop is going on.
-![[Pasted image 20231023115221.png]]
+
+![Screenshot luna function flow diagram](/assets/Pasted%20image%2020231023115221.png)
+
 The right most leaf is where the `ret` is located and the second box is just a comparison of var != 0. Seems like a downward counter.
 
 #### Initialization block [0x401156]
+
 It sets the iteration variable to whatever value we passed as a parameter, and initializes another variable to 0. This second variable it is only added on during the loop and the variable from which depends we return true or false after the loop. I called it `acc`.
 
 #### Loop body 1 [0x401172]
-![[Pasted image 20231023145311.png]]
+
+![Dissasembled first block fo luna function](/assets/Pasted%20image%2020231023145311.png)
 
 In the middle of the instructions there is a save to a local variable (`auxiliar`) at `0x0040119d`. I will try to guess what it does in two different segments before and after the save to make it a bit shorter.
 
@@ -68,21 +81,26 @@ The next operation subtracts `rax` to `rcx` (the contents of $i$) saving in `rax
 If we take a moment to look at the formula we will find out that the formula just extracts the least significant digit of an integer. Ex: If we send 20 we will get 0, if we send 35 we will get 5.
 
 ##### Second segment
+
 Starting at `0x004011a0` the program seems to apply the same trick twice to `rax` containing the value of $i$. So we basically do  $\left\lfloor\dfrac{i}{\dfrac{10}{10}}\right\rfloor$ which is equal to  $\left\lfloor\dfrac{i}{100}\right\rfloor$ .
-This operation ends in `0x004011cc` where we once more have the result inside `rax` and `rdx`. We multiply by 4 `rax` and then add `rdx` before adding `rax` to itself again making $10\left\lfloor\dfrac{i}{100}\right\rfloor$ in similar fashion as the [[Based#First segment]]. But then we subtract `rcx` this time `rcx` doesn't contain the value of $i$ but the intermediate step we used to calculate $\left\lfloor\dfrac{i}{100}\right\rfloor$. It contains $\left\lfloor\dfrac{i}{10}\right\rfloor$. So far the math looks like $rcx = \left\lfloor\dfrac{i}{10}\right\rfloor - 10\left\lfloor\dfrac{i}{100}\right\rfloor$.  
+This operation ends in `0x004011cc` where we once more have the result inside `rax` and `rdx`. We multiply by 4 `rax` and then add `rdx` before adding `rax` to itself again making $10\left\lfloor\dfrac{i}{100}\right\rfloor$ in similar fashion as the previous segment. But then we subtract `rcx` this time `rcx` doesn't contain the value of $i$ but the intermediate step we used to calculate $\left\lfloor\dfrac{i}{100}\right\rfloor$. It contains $\left\lfloor\dfrac{i}{10}\right\rfloor$. So far the math looks like $rcx = \left\lfloor\dfrac{i}{10}\right\rfloor - 10\left\lfloor\dfrac{i}{100}\right\rfloor$.  
 Then we move it to `eax` before adding it to itself and saving it into another intermediate local variable. So this second segment does $var\_10h =2(\left\lfloor\dfrac{i}{10}\right\rfloor - 10\left\lfloor\dfrac{i}{100}\right\rfloor)$.
 
-If the first segment looked at the least significant digit of an integer this one seem to look for the second least significant digit and multiplies it by 2. Ex: if we send 112 we get 
+If the first segment looked at the least significant digit of an integer this one seem to look for the second least significant digit and multiplies it by 2. Ex: if we send 112 we get
 $$x =2(\left\lfloor\dfrac{112}{10}\right\rfloor - 10\left\lfloor\dfrac{112}{100}\right\rfloor)$$
 $$x =2(11 - 10)$$
 $$x = 2$$
+
 #### Loop Body 2 [0x4011e6]
-![[Pasted image 20231023155534.png]]
+
+![Dissasembled second block of function luna](/assets/Pasted%20image%2020231023155534.png)
 
 It starts with a small if, it checks if the last value that we saved into memory is bigger than 9, if so it subtracts 9 to it else continues with execution.
 
 We load $2(\left\lfloor\dfrac{i}{10}\right\rfloor - 10\left\lfloor\dfrac{i}{100}\right\rfloor)$ into `edx` and $i - (10\left\lfloor\dfrac{i}{10}\right\rfloor)$ into `eax`. Add them both and add the result to the accumulator variable `sum`.
+
 $$sum = sum + 2(\left\lfloor\dfrac{i}{10}\right\rfloor - 10\left\lfloor\dfrac{i}{100}\right\rfloor) + i - (10\left\lfloor\dfrac{i}{10}\right\rfloor)$$
+
 From `0x004011fb` it seems the program updates the iterating local variable $i$. It seems to be doing something similar as the integer division seen before but the constant is different and the right shift is by 2 instead of 3. After some dynamic analysis of this steps I believe the operation is $i = \left\lfloor\dfrac{i}{100}\right\rfloor$. Each iteration $i$ gets integer divided by 100.
 
 So the loop must look something like this:
@@ -97,8 +115,10 @@ for(i = param1; i != 0; i = i / 100) {
 	acc = acc + part1 + part2;
 }
 ```
+
 ### Exiting the loop [0x401226]
-![[Pasted image 20231023162427.png]]
+
+![Dissasembled exit step of luna function](/assets/Pasted%20image%2020231023162427.png)
 
 Once $i$ has reached 0 we break free from the loop. Once free it seems we apply operations to the `sum` local variable and then test, after the operations, if the `edx` register is set to zero or not. If it is not returns 0 and  if it is return 1.
 
@@ -111,7 +131,7 @@ If we set a break point to the `test` instruction and we feed it different input
 | 1     | 1                 | 1           |
 | 18    | 10                | 0           |
 | 59    | 10                | 0           |
-| 5958  | 19                | 9            |
+| 5958  | 19                | 9           |
 
 Seems to focus on the last digit of the `sum` local variable. If it is zero returns true meaning it is checking if the `sum` is multiple of 10.
 
@@ -135,6 +155,7 @@ int luna(unsigned long long param1) {
 ```
 
 #### Function analysis
+
 So it seem the `luna` function checks pair of digits of the given parameter. A pair each iteration. Let's call them $A$ and $B$ so $A$ will be least significant digit and $B$ the second last ($...BA$). 
 Then each iteration we add $A + 2B$ if $B\leq9$  else $A + (2B-9)$. After all the loops we check the sum of the formula applied to all the pairs and see if they are multiple of 10.
 
@@ -151,11 +172,12 @@ We can plug some numbers and quickly find some that work:
 | 2   | 6   |
 | 4   | 2   |
 | 0   | 0   |
-| 3   | 4    |
+| 3   | 4   |
 
 So 18, 26 and 42 are valid inputs for the `luna` function.
 
 ## Solving it
+
 We have two conditions for our input:
 1. $10000000 \geq input \gt 100000$
 2. And the pairs of digits of input must assert that $(A + 2B)\mod 10 = 0$ is true
@@ -163,10 +185,13 @@ We have two conditions for our input:
 We just need to craft a number with pairs as we have discovered in the previous step and that falls in the desired range. 
 
 $input = 181818$
-![[Pasted image 20231023173449.png]]
+
+![Screenshot solved 0](/assets/Pasted%20image%2020231023173449.png)
 
 $input = 182634$
-![[Pasted image 20231023173539.png]]
+
+![Screenshot solved 1](/assets/Pasted%20image%2020231023173539.png)
 
 $input = 420000$
-![[Pasted image 20231023173652.png]]
+
+![Screenshot solved 2](/assets/Pasted%20image%2020231023173652.png)
